@@ -1,5 +1,9 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
+import cv2
+import time
+import math as m
+import MediaPipe as mp
 
 app = FastAPI(title="Ctrl+Sit - Posture Detection API")
 
