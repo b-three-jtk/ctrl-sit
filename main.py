@@ -39,6 +39,9 @@ def detect_posture(image, pose, fps, good_frames, bad_frames):
         cv2.circle(image_bgr, (shoulder_x, shoulder_y), 7, (0, 255, 0), -1)
         cv2.circle(image_bgr, (ear_x, ear_y), 7, (0, 255, 0), -1)
         cv2.circle(image_bgr, (hip_x, hip_y), 7, (0, 255, 0), -1)
+        
+        cv2.line(image_bgr, (ear_x, ear_y), (shoulder_x, shoulder_y), (255, 255, 0), 2)
+        cv2.line(image_bgr, (shoulder_x, shoulder_y), (hip_x, hip_y), (255, 0, 255), 2)
 
         neck_angle = abs(m.degrees(m.atan2(shoulder_y - ear_y, shoulder_x - ear_x)))
         torso_angle = abs(m.degrees(m.atan2(hip_y - shoulder_y, hip_x - shoulder_x)))
@@ -46,7 +49,7 @@ def detect_posture(image, pose, fps, good_frames, bad_frames):
         neck_angle = abs(neck_angle - 90)
         torso_angle = abs(torso_angle - 90)
 
-        if neck_angle > 40 or torso_angle > 10:
+        if neck_angle > 20 or torso_angle > 10:
             bad_frames += 1
         else:
             good_frames += 1
