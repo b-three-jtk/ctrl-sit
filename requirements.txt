@@ -4,3 +4,6 @@ fastapi
 streamlit
 opencv-python
 mediapipe
+numpy
+uvicorn
+python-multipart
