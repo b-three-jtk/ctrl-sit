@@ -2,28 +2,25 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 import cv2
 import mediapipe as mp
-import numpy as np
 import math as m
 import posture_alert as pa
-import os
-import sys
+import numpy as np
 
-# Inisialisasi FastAPI
 app = FastAPI(title="Ctrl+Sit Posture Detection API")
 
-# Inisialisasi MediaPipe Pose
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose()
 mp_drawing = mp.solutions.drawing_utils
 
 good_frames = 0
 bad_frames = 0
-fps = 30  # asumsi sementara
+fps = 30
+alert_sent = False
 
-def calculate_angle(x1, y1, x2, y2, x3, y3):
+def calculate_neck_angle(x1, y1, x2, y2, x3, y3):
     """
-    Calculate the angle between three points (x1,y1), (x2,y2), (x3,y3) with (x2,y2) as the vertex.
-    Returns the angle in degrees.
+    Hitung sudut antara vektor (x1,y1) → (x2,y2) dan (x2,y2) → (x3,y3).
+    Menggunakan rumus cosinus sudut.
     """
     vector1_x = x1 - x2
     vector1_y = y1 - y2
@@ -42,7 +39,24 @@ def calculate_angle(x1, y1, x2, y2, x3, y3):
     angle = m.degrees(m.acos(cos_theta))
     return abs(angle)
 
+def calculate_torso_angle(x1, y1, x2, y2):
+    """
+    Hitung sudut antara vektor (x1,y1) → (x2,y2) terhadap garis vertikal ke bawah (0, 1).
+    """
+    dx = x2 - x1
+    dy = y2 - y1
+
+    vector_magnitude = m.sqrt(dx**2 + dy**2)
+    if vector_magnitude == 0:
+        return 0
+
+    cos_theta = dy / vector_magnitude
+    cos_theta = max(min(cos_theta, 1.0), -1.0)
+    angle = m.degrees(m.acos(cos_theta))
+    return abs(angle)
+
 def detect_posture(image, pose, fps, good_frames, bad_frames):
+    global alert_sent
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     results = pose.process(image_rgb)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
@@ -72,8 +86,8 @@ def detect_posture(image, pose, fps, good_frames, bad_frames):
         cv2.line(image_bgr, (ear_x, ear_y), (shoulder_x, shoulder_y), (255, 255, 0), 2)
         cv2.line(image_bgr, (shoulder_x, shoulder_y), (hip_x, hip_y), (255, 0, 255), 2)
 
-        neck_angle = calculate_angle(ear_x, ear_y, shoulder_x, shoulder_y, shoulder_x, shoulder_y + 100)
-        torso_angle = calculate_angle(shoulder_x, shoulder_y, hip_x, hip_y, hip_x, hip_y + 100)
+        neck_angle = calculate_neck_angle(ear_x, ear_y, shoulder_x, shoulder_y, shoulder_x, shoulder_y - 100)
+        torso_angle = calculate_torso_angle(shoulder_x, shoulder_y, hip_x, hip_y)
 
         if neck_angle > 20 or torso_angle > 10:
             bad_frames += 1
@@ -82,166 +96,40 @@ def detect_posture(image, pose, fps, good_frames, bad_frames):
 
         posture = "Good" if good_frames > bad_frames else "Bad"
         color = (0, 255, 0) if posture == "Good" else (0, 0, 255)
-
+    
         good_time = good_frames / fps
         bad_time = bad_frames / fps
 
         cv2.putText(image_bgr, f"Posture: {posture}", (30, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        cv2.putText(image_bgr, f"Neck Inclination: {int(neck_angle)} deg", (30, 100),
+        cv2.putText(image_bgr, f"Good Posture Time: {int(good_time)} sec", (30, 100),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(image_bgr, f"Torso Inclination: {int(torso_angle)} deg", (30, 150),
+        cv2.putText(image_bgr, f"Bad Posture Time: {int(bad_time)} sec", (30, 150),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(image_bgr, f"Good Posture Time: {int(good_time)} sec", (30, 200),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(image_bgr, f"Bad Posture Time: {int(bad_time)} sec", (30, 250),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
         try:
-            if bad_time > 20:
-                if not st.session_state.get('alert_sent', False):
-                    pa.handle_posture_audio(True)
-                    st.session_state['alert_sent'] = True
-        except NameError:
-            if bad_time > 20:
+            if bad_time > 10 and not alert_sent:
                 pa.handle_posture_audio(True)
-
+                alert_sent = True
+                good_frames = 0
+                bad_frames = 0
+            elif good_time > 30 and alert_sent:
+                pa.handle_posture_audio(False)
+                alert_sent = False
+                good_frames = 0
+                bad_frames = 0
+        except Exception as e:
+            print(f"Error playing audio: {e}")
     return image_bgr, good_frames, bad_frames
 
-@app.post("/detect-posture")
-async def detect_posture_endpoint(file: UploadFile = File(...)):
+@app.post("/detect-posture/")
+async def detect(file: UploadFile = File(...)):
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
     global good_frames, bad_frames
-    good_frames = 0
-    bad_frames = 0
+    result_image, good_frames, bad_frames = detect_posture(image, pose, fps, good_frames, bad_frames)
 
-    if file.content_type not in ["image/jpeg", "image/png", "video/mp4"]:
-        raise HTTPException(status_code=400, detail="File must be an image (jpg/png) or video (mp4)")
-
-    file_bytes = await file.read()
-
-    if file.content_type.startswith("image"):
-        image = cv2.imdecode(np.frombuffer(file_bytes, np.uint8), cv2.IMREAD_COLOR)
-        if image is None:
-            raise HTTPException(status_code=400, detail="Invalid image file")
-        
-        frame, good_frames, bad_frames = detect_posture(image, pose, fps, good_frames, bad_frames)
-        posture = "Good" if good_frames > bad_frames else "Bad"
-        
-        if posture == "Bad":
-            pa.handle_posture_audio(True)
-        elif posture == "Good":
-            pa.handle_posture_audio(False)
-
-        return JSONResponse(content={
-            "status": "success",
-            "posture": posture,
-            "message": "Posture detection completed"
-        })
-
-    elif file.content_type.startswith("video"):
-        temp_file = "temp_video.mp4"
-        with open(temp_file, "wb") as f:
-            f.write(file_bytes)
-
-        cap = cv2.VideoCapture(temp_file)
-        ret, frame = cap.read()
-        if not ret:
-            cap.release()
-            os.remove(temp_file)
-            raise HTTPException(status_code=400, detail="Invalid video file")
-
-        frame, good_frames, bad_frames = detect_posture(frame, pose, fps, good_frames, bad_frames)
-        posture = "Good" if good_frames > bad_frames else "Bad"
-        cap.release()
-        os.remove(temp_file)
-
-        if posture == "Bad":
-            pa.handle_posture_audio(True)
-        elif posture == "Good":
-            pa.handle_posture_audio(False)
-
-        return JSONResponse(content={
-            "status": "success",
-            "posture": posture,
-            "message": "Posture detection completed (first frame analyzed)"
-        })
-
-# Fungsi untuk menjalankan aplikasi Streamlit
-def run_streamlit_app():
-    import streamlit as st
-    global good_frames, bad_frames
-
-    good_frames = 0
-    bad_frames = 0
-
-    st.set_page_config(page_title="Ctrl+Sit - Posture Monitor", layout="centered")
-    st.title("🪑 Ctrl+Sit - Real-time Posture Detection")
-    st.markdown("Mulai kamera dan pastikan postur dudukmu tetap baik.")
-
-    # Tambahkan opsi untuk unggah file
-    uploaded_file = st.file_uploader("Unggah gambar atau video", type=["jpg", "png", "mp4"])
-
-    if uploaded_file is not None:
-        # Proses file yang diunggah
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        if uploaded_file.type.startswith("image"):
-            image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            if image is not None:
-                frame, good_frames, bad_frames = detect_posture(image, pose, fps, good_frames, bad_frames)
-                posture = "Good" if good_frames > bad_frames else "Bad"
-                st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption=f"Detected Posture: {posture}", use_column_width=True)
-                if posture == "Bad":
-                    pa.handle_posture_audio(True)
-                    st.warning("⚠️ Bad posture detected. Please adjust your sitting position.")
-                elif posture == "Good":
-                    pa.handle_posture_audio(False)
-                    st.success("✅ Good posture detected. Keep it up!")
-            else:
-                st.error("Gagal memproses gambar.")
-        elif uploaded_file.type.startswith("video"):
-            temp_file = "temp_video.mp4"
-            with open(temp_file, "wb") as f:
-                f.write(uploaded_file.getvalue())
-            cap = cv2.VideoCapture(temp_file)
-            ret, frame = cap.read()
-            if ret:
-                frame, good_frames, bad_frames = detect_posture(frame, pose, fps, good_frames, bad_frames)
-                posture = "Good" if good_frames > bad_frames else "Bad"
-                st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), caption=f"Detected Posture: {posture} (Frame 1)", use_column_width=True)
-                if posture == "Bad":
-                    pa.handle_posture_audio(True)
-                    st.warning("⚠️ Bad posture detected. Please adjust your sitting position.")
-                elif posture == "Good":
-                    pa.handle_posture_audio(False)
-                    st.success("✅ Good posture detected. Keep it up!")
-            else:
-                st.error("Gagal memproses video.")
-            cap.release()
-            os.remove(temp_file)
-
-    # Opsi kamera (tetap dipertahankan)
-    run = st.button('Start Camera')
-    frame_window = st.image([])
-
-    cap = None
-    if run:
-        cap = cv2.VideoCapture(0)
-
-        while run:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            frame, good_frames, bad_frames = detect_posture(frame, pose, fps, good_frames, bad_frames)
-            frame_window.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-        cap.release()
-        st.success("Camera stopped.")
-
-# Jalankan aplikasi berdasarkan cara eksekusi
-if __name__ == "__main__":
-    if "streamlit" in sys.modules or "streamlit" in sys.argv[0]:
-        run_streamlit_app()
-    else:
-        import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+    _, buffer = cv2.imencode('.jpg', result_image)
+    return JSONResponse(content={"status": "success", "good_frames": good_frames, "bad_frames": bad_frames})
