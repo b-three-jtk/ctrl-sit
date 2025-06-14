@@ -103,19 +103,17 @@ def detect_posture(image, pose, fps, good_frames, bad_frames):
         cv2.putText(image_bgr, f"Posture: {posture}", (30, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
         cv2.putText(image_bgr, f"Good Posture Time: {int(good_time)} sec", (30, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         cv2.putText(image_bgr, f"Bad Posture Time: {int(bad_time)} sec", (30, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    
         try:
-            if bad_time > 10 and not alert_sent:
+            if bad_time > 10:
                 pa.handle_posture_audio(True)
-                alert_sent = True
                 good_frames = 0
                 bad_frames = 0
-            elif good_time > 30 and alert_sent:
+            elif good_time > 30:
                 pa.handle_posture_audio(False)
-                alert_sent = False
                 good_frames = 0
                 bad_frames = 0
         except Exception as e:
